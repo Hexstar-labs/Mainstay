@@ -57,3 +57,44 @@ Pass `--audit-file <path>` to `show` or `diff` to append a JSONL record:
 The `sha256` is a digest of the environment's canonical JSON, so an audit entry
 can be matched to the exact configuration that was in effect. Identity fields
 (`rpc_url`, `network_passphrase`) are excluded from promotion diffs.
+
+## State snapshots and recovery (#1727)
+
+Snapshots capture the export produced by `scripts/backup.sh` as one gzipped,
+checksummed file, and recovery is planned from them. Live writes still go
+through `scripts/restore.sh`.
+
+```bash
+# 1. Export live state (writes to backups/<timestamp>/ by default)
+./scripts/backup.sh --output-dir backups/manual
+
+# 2. Package it as a snapshot, pruning all but the newest 30
+python3 -m scripts.ops.snapshot create --backup-dir backups/manual \
+  --out-dir snapshots --network testnet --keep 30
+
+# 3. Verify checksum, schema version, record counts and cross-references
+python3 -m scripts.ops.snapshot verify snapshots/snapshot-<timestamp>.json.gz
+
+# 4. Build the ordered recovery plan (dry run, nothing is written on-chain)
+python3 -m scripts.ops.snapshot plan snapshots/snapshot-<timestamp>.json.gz --out plan.json
+
+# 5. After restoring, export the new state and confirm it matches the snapshot
+./scripts/backup.sh --output-dir backups/post-restore
+python3 -m scripts.ops.snapshot compare snapshots/snapshot-<timestamp>.json.gz \
+  --actual backups/post-restore
+```
+
+Safeguards:
+
+- A snapshot is refused if its state has records that reference a missing
+  asset (orphans) or a history entry that names a different asset.
+- The asset registry assigns IDs sequentially, so a plan is refused when asset
+  IDs are not contiguous from 1. Partial recovery is allowed with
+  `--start-asset-id N`.
+- A snapshot whose content no longer matches its SHA-256, or whose record
+  counts differ from the manifest, is rejected when read.
+
+The `state-snapshot` workflow runs the export daily. It is disabled until the
+repository sets the `SNAPSHOTS_ENABLED` variable to `true`, and it runs in the
+`snapshots` GitHub environment. Each snapshot is uploaded as an artifact kept
+for 90 days.
