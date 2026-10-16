@@ -138,3 +138,38 @@ environment, then pauses for a reviewer in the `production-approval`
 environment before moving to 100%. Configure that environment with required
 reviewers in the repository settings. A promoted rollout cannot be rolled back
 with this tool; redeploy the previous WASM instead.
+
+## Centralized logging (#1729)
+
+Ops tools write structured JSON lines, one record per line, with required
+fields `ts` (millisecond UTC), `level`, `service` and `event`, and optional
+`message` and context fields. Keys that look like secrets (`*secret*`,
+`*token*`, `*password*`, `*api_key*`, and so on) are redacted, and Stellar secret
+seeds are redacted from any value.
+
+Set `MAINSTAY_LOG_FILE` to have the ops CLIs append to a shared file. Canary
+rollbacks are logged at `WARNING` so they can be alerted on.
+
+```bash
+export MAINSTAY_LOG_FILE=/var/log/mainstay/ops.jsonl
+python3 -m scripts.ops.canary advance --env mainnet --metrics-url "$CANARY_METRICS_URL"
+
+# Search: minimum level, service, event, time window, substring
+python3 -m scripts.ops.jsonlog search /var/log/mainstay/*.jsonl \
+  --level WARNING --service canary --since 2026-10-15T00:00:00Z --contains "p95"
+
+# Retention: delete files past the environment's retention_days (dry run first)
+python3 -m scripts.ops.jsonlog prune /var/log/mainstay --env mainnet --dry-run
+```
+
+Malformed lines are skipped and counted in the output rather than failing the
+search, so a single corrupt write does not hide the rest of the log.
+
+Shipping: `monitoring/logging/fluent-bit.conf` tails `/var/log/mainstay/*.jsonl`,
+parses each line, labels by `environment`, `service` and `level`, and forwards to
+Loki. `monitoring/logging/loki-config.yml` sets 365-day retention (8760h),
+matching `[mainnet.logging] retention_days`. A test fails if they drift apart.
+
+Limitation: the shell scripts (`backup.sh`, `restore.sh`) still write plain text
+to stdout. They are not yet in the JSON stream, so their output must be captured
+separately until they emit through the same format.

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from scripts.ops import config
+from scripts.ops.jsonlog import log_event
 
 REPO_ROOT = config.REPO_ROOT
 DEFAULT_STATE_PATH = REPO_ROOT / "deploy" / "canary-state.json"
@@ -192,6 +193,8 @@ def rollback(state: CanaryState, *, reason: str, save: Callable[[CanaryState], N
     state.status = STATUS_ROLLED_BACK
     state.record("rolled_back", reason=reason)
     save(state)
+    log_event("WARNING", "canary", "rolled_back", f"canary rolled back: {reason}",
+              environment=state.environment, canary_contract_id=state.canary_contract_id)
     return state
 
 
@@ -286,10 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        code = args.func(args)
     except (CanaryError, config.ConfigError) as exc:
         print(f"canary error: {exc}", file=sys.stderr)
+        log_event("ERROR", "canary", args.command, str(exc))
         return 1
+    log_event("INFO", "canary", args.command, exit_code=code)
+    return code
 
 
 if __name__ == "__main__":

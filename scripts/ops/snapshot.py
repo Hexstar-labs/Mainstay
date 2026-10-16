@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scripts.ops.jsonlog import log_event
+
 SCHEMA_VERSION = 1
 SNAPSHOT_PREFIX = "snapshot-"
 SNAPSHOT_SUFFIX = ".json.gz"
@@ -326,10 +328,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        code = args.func(args)
     except SnapshotError as exc:
         print(f"snapshot error: {exc}", file=sys.stderr)
+        log_event("ERROR", "snapshot", args.command, str(exc))
         return 1
+    log_event("INFO", "snapshot", args.command, exit_code=code)
+    return code
 
 
 if __name__ == "__main__":
