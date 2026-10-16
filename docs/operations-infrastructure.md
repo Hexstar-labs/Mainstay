@@ -98,3 +98,43 @@ The `state-snapshot` workflow runs the export daily. It is disabled until the
 repository sets the `SNAPSHOTS_ENABLED` variable to `true`, and it runs in the
 `snapshots` GitHub environment. Each snapshot is uploaded as an artifact kept
 for 90 days.
+
+## Canary rollouts (#1728)
+
+Soroban contracts have no built-in traffic splitting. A canary is therefore a
+second Lifecycle instance deployed from the new WASM, and a traffic router
+(client or API layer, outside this repository) sends `percent` of requests to
+it. The router reads `deploy/canary-state.json`, which the rollout tool keeps up
+to date (written atomically).
+
+Stages come from `[env.canary].stages` in `environments.toml`. Mainnet ramps
+`1 → 5 → 25 → 50 → 100`. Each stage is observed for `observe_secs` against a
+metrics endpoint (`CANARY_METRICS_URL`) that returns:
+
+```json
+{"total": 1200, "failures": 3, "p95_latency_ms": 640}
+```
+
+| Condition | Result |
+|---|---|
+| Error rate above `max_error_rate`, or p95 above `max_p95_latency_ms` | Rolled back to 0% |
+| Fewer than `min_samples` requests | Retried up to 3 times, then rolled back |
+| Stage healthy | Advances to the next stage |
+| Next stage is 100% and no approval given | Held (`exit 2`) until approved |
+
+An interrupted run resumes by re-observing the stage that was in progress, so
+no stage is skipped without its health check.
+
+```bash
+python3 -m scripts.ops.canary start --env staging --stable-id <C…> --canary-id <C…>
+python3 -m scripts.ops.canary advance --env staging           # ramps to the approval gate
+python3 -m scripts.ops.canary advance --env staging --approve-final
+python3 -m scripts.ops.canary status
+python3 -m scripts.ops.canary rollback --reason "incident 123"  # refused once promoted
+```
+
+The `canary-deploy` workflow (manual dispatch) runs the ramp in the target
+environment, then pauses for a reviewer in the `production-approval`
+environment before moving to 100%. Configure that environment with required
+reviewers in the repository settings. A promoted rollout cannot be rolled back
+with this tool; redeploy the previous WASM instead.
